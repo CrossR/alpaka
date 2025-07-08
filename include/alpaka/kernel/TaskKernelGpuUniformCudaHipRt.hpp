@@ -78,15 +78,16 @@ namespace alpaka
             kernelFnObj(const_cast<TAcc const&>(acc), args...);
         }
 
-        // TODO: Include maxBlocksPerCluster?
-        //       Both it and minBlocksPerMultiprocessor are optional.
+        // TODO: On CUDA, there is also a maxBlocksPerCluster arg.
+        //       HIP does not support this, and support for it in CUDA is only in sm_90+.
         template<
             std::size_t TMaxThreadsPerBlock,
             std::size_t TMinBlocksPerMultiprocessor,
             typename TKernelFnObj,
             typename TAcc,
             typename... TArgs>
-        __global__ __launch_bounds__(TMaxThreadsPerBlock, TMinBlocksPerMultiprocessor) void gpuKernelLaunchBounds(
+        __global__ __launch_bounds__(TMaxThreadsPerBlock, TMinBlocksPerMultiprocessor)
+        void gpuKernelLaunchBounds(
             Vec<Dim<TAcc>, Idx<TAcc>> const threadElemExtent,
             TKernelFnObj const kernelFnObj,
             TArgs... args)
@@ -113,17 +114,39 @@ namespace alpaka
         template<typename TKernelFnObj, typename TTag, std::enable_if_t<trait::HasKernelLaunchBounds<TKernelFnObj, TTag>::value, int> = 0>
         constexpr std::size_t getMaxThreadsPerBlock()
         {
-            return trait::KernelLaunchBounds<TKernelFnObj, TTag>::maxThreadsPerBlock;
+            if constexpr(requires { trait::KernelLaunchBounds<TKernelFnObj, TTag>::maxThreadsPerBlock; })
+                return trait::KernelLaunchBounds<TKernelFnObj, TTag>::maxThreadsPerBlock;
+            else
+            {
+                static_assert(
+                    !std::is_same_v<TKernelFnObj, TKernelFnObj>,
+                    "A specialization of alpaka::trait::KernelLaunchBounds for CUDA/HIP must define 'maxThreadsPerBlock'.");
+                return 0;
+            }
         }
 
         //! Helper to get the minBlocksPerMultiprocessor, returning 0 if the KernelLaunchBounds trait is not specialized.
+        // TODO: CUDA uses minBlocksPerMultiprocessor, HIP uses minWarpsPerExecutionUnit. Support both?
         template<typename TKernelFnObj, typename TTag, std::enable_if_t<!trait::HasKernelLaunchBounds<TKernelFnObj, TTag>::value, int> = 0>
         constexpr std::size_t getMinBlocksPerMultiprocessor() { return 0; }
 
         template<typename TKernelFnObj, typename TTag, std::enable_if_t<trait::HasKernelLaunchBounds<TKernelFnObj, TTag>::value, int> = 0>
         constexpr std::size_t getMinBlocksPerMultiprocessor()
         {
-            return trait::KernelLaunchBounds<TKernelFnObj, TTag>::minBlocksPerMultiprocessor;
+            if constexpr(requires { trait::KernelLaunchBounds<TKernelFnObj, TTag>::minBlocksPerMultiprocessor; })
+                return trait::KernelLaunchBounds<TKernelFnObj, TTag>::minBlocksPerMultiprocessor;
+            else
+            {
+                //! Default value for minBlocksPerMultiprocessor should be 0 for CUDA, and 1 for HIP.
+                if constexpr(std::is_same_v<TTag, alpaka::TagGpuCudaRt>)
+                {
+                    return 0;
+                }
+                else
+                {
+                    return 1;
+                }
+            }
         }
 
         template<typename TKernelFnObj, typename TAcc, typename... TArgs>

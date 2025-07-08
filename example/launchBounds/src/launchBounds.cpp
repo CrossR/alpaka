@@ -36,27 +36,47 @@ struct ComputeKernel
 
 //! A separate kernel type that we will use to apply launch bounds.
 //! It has the same implementation as ComputeKernel.
-struct ComputeKernelWithBounds : ComputeKernel
+//! A kernel for testing maxThreadsPerBlock only.
+struct ComputeKernelWithMaxThreadsOnly : ComputeKernel
+{
+};
+
+//! A kernel for testing maxThreadsPerBlock and minBlocksPerMultiprocessor.
+struct ComputeKernelWithMinBlocks : ComputeKernel
 {
 };
 
 namespace alpaka::trait
 {
-    // Specialize KernelLaunchBounds for CUDA accelerators.
-    // This will apply __launch_bounds__(128, 8) to ComputeKernelWithBounds.
-    // These values are a hint to the compiler. They can improve performance by increasing
-    // occupancy, but can also hurt performance if they cause register spilling.
-    // Finding the optimal values often requires experimentation.
+    // --- Specializations for CUDA ---
+
+    //! maxThreadsPerBlock only
     template<>
-    struct KernelLaunchBounds<ComputeKernelWithBounds, alpaka::TagGpuCudaRt>
+    struct KernelLaunchBounds<ComputeKernelWithMaxThreadsOnly, alpaka::TagGpuCudaRt>
+    {
+        static constexpr std::size_t maxThreadsPerBlock = 256;
+    };
+
+    //! maxThreadsPerBlock and minBlocksPerMultiprocessor
+    template<>
+    struct KernelLaunchBounds<ComputeKernelWithMinBlocks, alpaka::TagGpuCudaRt>
     {
         static constexpr std::size_t maxThreadsPerBlock = 128;
         static constexpr std::size_t minBlocksPerMultiprocessor = 8;
     };
 
-    //! Specialize KernelLaunchBounds for HIP accelerators.
+    // --- Specializations for HIP ---
+
+    //! maxThreadsPerBlock only
     template<>
-    struct KernelLaunchBounds<ComputeKernelWithBounds, alpaka::TagGpuHipRt>
+    struct KernelLaunchBounds<ComputeKernelWithMaxThreadsOnly, alpaka::TagGpuHipRt>
+    {
+        static constexpr std::size_t maxThreadsPerBlock = 256;
+    };
+
+    //! maxThreadsPerBlock and minBlocksPerMultiprocessor
+    template<>
+    struct KernelLaunchBounds<ComputeKernelWithMinBlocks, alpaka::TagGpuHipRt>
     {
         static constexpr std::size_t maxThreadsPerBlock = 128;
         static constexpr std::size_t minBlocksPerMultiprocessor = 4;
@@ -102,82 +122,54 @@ auto example(TAccTag const&) -> int
 
     // Define kernels
     ComputeKernel noBoundsKernel;
-    ComputeKernelWithBounds withBoundsKernel;
+    ComputeKernelWithMaxThreadsOnly maxThreadsKernel;
+    ComputeKernelWithMinBlocks minBlocksKernel;
 
     // Define work division configuration
     alpaka::KernelCfg<Acc> const kernelCfg = {problemSize, 1u};
 
-    // --- Run without launch bounds ---
-    auto const workDivNoBounds = alpaka::getValidWorkDiv(
-        kernelCfg,
-        devAcc,
-        noBoundsKernel,
-        alpaka::getPtrNative(bufSrc),
-        alpaka::getPtrNative(bufDst),
-        problemSize);
-    std::cout << "Executing without bounds. WorkDiv: " << workDivNoBounds << std::endl;
-
-    // Warm-up run
-    alpaka::exec<Acc>(
-        queue,
-        workDivNoBounds,
-        noBoundsKernel,
-        alpaka::getPtrNative(bufSrc),
-        alpaka::getPtrNative(bufDst),
-        problemSize);
-
-    // Timed runs
-    auto startNoBounds = std::chrono::high_resolution_clock::now();
-    for(std::size_t i = 0; i < numRuns; ++i)
-    {
-        alpaka::exec<Acc>(
-            queue,
-            workDivNoBounds,
-            noBoundsKernel,
+    // Helper lambda to run and time a kernel
+    auto runBenchmark = [&](auto const& kernel, std::string const& description) {
+        auto const workDiv = alpaka::getValidWorkDiv(
+            kernelCfg,
+            devAcc,
+            kernel,
             alpaka::getPtrNative(bufSrc),
             alpaka::getPtrNative(bufDst),
             problemSize);
-    }
-    alpaka::wait(queue);
-    auto endNoBounds = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> durationNoBounds = (endNoBounds - startNoBounds) / numRuns;
-    std::cout << "Avg. Duration (no bounds): " << durationNoBounds.count() << " ms" << std::endl;
+        std::cout << "Executing " << description << ". WorkDiv: " << workDiv << std::endl;
 
-    // --- Run with launch bounds ---
-    auto const workDivWithBounds = alpaka::getValidWorkDiv(
-        kernelCfg,
-        devAcc,
-        withBoundsKernel,
-        alpaka::getPtrNative(bufSrc),
-        alpaka::getPtrNative(bufDst),
-        problemSize);
-    std::cout << "Executing with bounds.    WorkDiv: " << workDivWithBounds << std::endl;
-
-    // Warm-up run
-    alpaka::exec<Acc>(
-        queue,
-        workDivWithBounds,
-        withBoundsKernel,
-        alpaka::getPtrNative(bufSrc),
-        alpaka::getPtrNative(bufDst),
-        problemSize);
-
-    // Timed runs
-    auto startWithBounds = std::chrono::high_resolution_clock::now();
-    for(std::size_t i = 0; i < numRuns; ++i)
-    {
+        // Warm-up run
         alpaka::exec<Acc>(
             queue,
-            workDivWithBounds,
-            withBoundsKernel,
+            workDiv,
+            kernel,
             alpaka::getPtrNative(bufSrc),
             alpaka::getPtrNative(bufDst),
             problemSize);
-    }
-    alpaka::wait(queue);
-    auto endWithBounds = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> durationWithBounds = (endWithBounds - startWithBounds) / numRuns;
-    std::cout << "Avg. Duration (with bounds): " << durationWithBounds.count() << " ms" << std::endl;
+
+        // Timed runs
+        auto start = std::chrono::high_resolution_clock::now();
+        for(std::size_t i = 0; i < numRuns; ++i)
+        {
+            alpaka::exec<Acc>(
+                queue,
+                workDiv,
+                kernel,
+                alpaka::getPtrNative(bufSrc),
+                alpaka::getPtrNative(bufDst),
+                problemSize);
+        }
+        alpaka::wait(queue);
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> duration = (end - start) / numRuns;
+        std::cout << "Avg. Duration (" << description << "): " << duration.count() << " ms" << std::endl;
+    };
+
+    // --- Run benchmarks ---
+    runBenchmark(noBoundsKernel, "without bounds");
+    runBenchmark(maxThreadsKernel, "with maxThreads");
+    runBenchmark(minBlocksKernel, "with minBlocks");
 
     return EXIT_SUCCESS;
 }
