@@ -68,7 +68,33 @@ namespace alpaka
         {
             TAcc const acc(threadElemExtent);
 
-// with clang it is not possible to query std::result_of for a pure device lambda created on the host side
+// With clang it is not possible to query std::result_of for a pure device
+// lambda created on the host side
+#        if !(ALPAKA_COMP_CLANG_CUDA && ALPAKA_COMP_CLANG)
+            static_assert(
+                std::is_same_v<decltype(kernelFnObj(const_cast<TAcc const&>(acc), args...)), void>,
+                "The TKernelFnObj is required to return void!");
+#        endif
+            kernelFnObj(const_cast<TAcc const&>(acc), args...);
+        }
+
+        // TODO: Include maxBlocksPerCluster?
+        //       Both it and minBlocksPerMultiprocessor are optional.
+        template<
+            std::size_t TMaxThreadsPerBlock,
+            std::size_t TMinBlocksPerMultiprocessor,
+            typename TKernelFnObj,
+            typename TAcc,
+            typename... TArgs>
+        __global__ __launch_bounds__(TMaxThreadsPerBlock, TMinBlocksPerMultiprocessor) void gpuKernelLaunchBounds(
+            Vec<Dim<TAcc>, Idx<TAcc>> const threadElemExtent,
+            TKernelFnObj const kernelFnObj,
+            TArgs... args)
+        {
+            TAcc const acc(threadElemExtent);
+
+// With clang it is not possible to query std::result_of for a pure device
+// lambda created on the host side
 #        if !(ALPAKA_COMP_CLANG_CUDA && ALPAKA_COMP_CLANG)
             static_assert(
                 std::is_same_v<decltype(kernelFnObj(const_cast<TAcc const&>(acc), args...)), void>,
@@ -80,12 +106,52 @@ namespace alpaka
 #            pragma clang diagnostic pop
 #        endif
 
+        //! Helper to get the maxThreadsPerBlock, returning 0 if the KernelLaunchBounds trait is not specialized.
+        template<typename TKernelFnObj, typename TTag, std::enable_if_t<!trait::HasKernelLaunchBounds<TKernelFnObj, TTag>::value, int> = 0>
+        constexpr std::size_t getMaxThreadsPerBlock() { return 0; }
+
+        template<typename TKernelFnObj, typename TTag, std::enable_if_t<trait::HasKernelLaunchBounds<TKernelFnObj, TTag>::value, int> = 0>
+        constexpr std::size_t getMaxThreadsPerBlock()
+        {
+            return trait::KernelLaunchBounds<TKernelFnObj, TTag>::maxThreadsPerBlock;
+        }
+
+        //! Helper to get the minBlocksPerMultiprocessor, returning 0 if the KernelLaunchBounds trait is not specialized.
+        template<typename TKernelFnObj, typename TTag, std::enable_if_t<!trait::HasKernelLaunchBounds<TKernelFnObj, TTag>::value, int> = 0>
+        constexpr std::size_t getMinBlocksPerMultiprocessor() { return 0; }
+
+        template<typename TKernelFnObj, typename TTag, std::enable_if_t<trait::HasKernelLaunchBounds<TKernelFnObj, TTag>::value, int> = 0>
+        constexpr std::size_t getMinBlocksPerMultiprocessor()
+        {
+            return trait::KernelLaunchBounds<TKernelFnObj, TTag>::minBlocksPerMultiprocessor;
+        }
+
+        template<typename TKernelFnObj, typename TAcc, typename... TArgs>
+        inline auto getKernelName()
+        {
+            using TTag = AccToTag<TAcc>;
+            // Only apply launch bounds if a specialization exists for a CUDA or HIP tag.
+            if constexpr(
+                trait::HasKernelLaunchBounds<TKernelFnObj, TTag>::value
+                && accMatchesTags<TAcc, alpaka::TagGpuCudaRt, alpaka::TagGpuHipRt>)
+            {
+                return gpuKernelLaunchBounds<
+                    detail::getMaxThreadsPerBlock<TKernelFnObj, TTag>(),
+                    detail::getMinBlocksPerMultiprocessor<TKernelFnObj, TTag>(),
+                    TKernelFnObj,
+                    TAcc,
+                    TArgs...>;
+            }
+
+            return gpuKernel<TKernelFnObj, TAcc, TArgs...>;
+        }
+
         template<typename TKernelFnObj, typename TAcc, typename... TArgs>
         inline void (*kernelName)(
             Vec<Dim<TAcc>, Idx<TAcc>> const,
             TKernelFnObj const,
             remove_restrict_t<std::decay_t<TArgs>>...)
-            = gpuKernel<TKernelFnObj, TAcc, TArgs...>;
+            = getKernelName<TKernelFnObj, TAcc, TArgs...>();
 
     } // namespace detail
 
@@ -327,10 +393,10 @@ namespace alpaka
                 [[maybe_unused]] TKernelFn const& kernelFn,
                 [[maybe_unused]] TArgs&&... args) -> alpaka::KernelFunctionAttributes
             {
-                auto kernelName = alpaka::detail::kernelName<
+                auto kernelName = alpaka::detail::getKernelName<
                     TKernelFn,
                     AccGpuUniformCudaHipRt<TApi, TDim, TIdx>,
-                    remove_restrict_t<std::decay_t<TArgs>>...>;
+                    remove_restrict_t<std::decay_t<TArgs>>...>();
 
                 typename TApi::FuncAttributes_t funcAttrs;
 #        if ALPAKA_COMP_GNUC

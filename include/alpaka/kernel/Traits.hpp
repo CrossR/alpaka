@@ -34,6 +34,39 @@ namespace alpaka
             typename TSfinae = void*/>
         struct CreateTaskKernel;
 
+        //! The trait for defining launch bounds for a kernel functor.
+        template<typename TKernelFnObj, typename TTag = void, typename = void>
+        struct KernelLaunchBounds
+        {
+            //! Initial value, to indicate no launch bounds specialization.
+            using is_unspecialized = void;
+        };
+
+        namespace detail
+        {
+            template<typename T, typename = void>
+            struct HasIsUnspecializedMember : std::false_type
+            {
+            };
+
+            template<typename T>
+            struct HasIsUnspecializedMember<T, std::void_t<typename T::is_unspecialized>> : std::true_type
+            {
+            };
+
+            template<typename TKernelFnObj, typename TTag>
+            struct HasKernelLaunchBoundsImpl
+                : std::negation<HasIsUnspecializedMember<KernelLaunchBounds<TKernelFnObj, TTag>>>
+            {
+            };
+        } // namespace detail
+
+        //! A helper trait to detect if KernelLaunchBounds has been specialized.
+        template<typename TKernelFnObj, typename TTag = void>
+        struct HasKernelLaunchBounds : detail::HasKernelLaunchBoundsImpl<TKernelFnObj, TTag>
+        {
+        };
+
         //! The trait for getting the size of the block shared dynamic memory of a kernel.
         //!
         //! \tparam TKernelFnObj The kernel function object.
